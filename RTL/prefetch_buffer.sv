@@ -5,10 +5,10 @@ module prefetch_buffer(
     input logic rst_n,
     
     //AXI4-Lite Interface
-    input  logic                  i_lookup_valid,
+    input  logic i_lookup_valid,
     input  logic [ADDR_WIDTH-1:0] i_lookup_addr,
     
-    output logic                  o_lookup_hit,
+    output logic o_lookup_hit,
     output logic [DATA_WIDTH-1:0] o_lookup_data,
 
     //DRAM Routing (DATA FILL Interface)
