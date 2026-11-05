@@ -186,11 +186,4 @@ module dram_fsm #(
         end
     end
 
-    always_ff @(posedge clk) begin
-        if (rst_n) begin
-            $display("[DRAM_FSM_DEBUG] Time=%0t ns | State=%0d | Timer=%0d | Cmd=%0d | ReqAddr=%0h", 
-                     $time, current_state, timer_curr, o_dram_cmd, i_req_addr);
-        end
-    end
-
 endmodule
