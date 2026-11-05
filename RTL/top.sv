@@ -63,7 +63,7 @@ module top #(
     logic arb_rd_ready, arb_wr_ready;
 
     //Module Instantiations
-    axi4_lite_slave u_axi_slave (
+    AXI_lite_slave u_axi_slave (
         .aclk               (aclk),
         .aresetn            (aresetn),
         .awaddr             (awaddr),
