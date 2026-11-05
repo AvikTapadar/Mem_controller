@@ -27,7 +27,7 @@ module dram_fsm #(
 
     //AXI Interface
     output logic o_resp_valid,
-    output logic [DATA_WIDTH-1:0] o_resp_data,
+    output logic [DATA_WIDTH-1:0] o_resp_data
 );
 
     //Command Encoding for DRAM

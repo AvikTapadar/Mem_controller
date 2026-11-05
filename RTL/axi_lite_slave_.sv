@@ -29,7 +29,7 @@ module AXI_lite_slave(
     output logic [DATA_WIDTH-1:0] rdata,
     output logic [1:0] rresp,
     output logic rvalid,
-    input logic rready
+    input logic rready,
 
     //FR-FCFS interface and prefetch buffer interface added
     // Demand Read Interface
