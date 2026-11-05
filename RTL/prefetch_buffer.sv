@@ -14,7 +14,11 @@ module prefetch_buffer(
     //DRAM Routing (DATA FILL Interface)
     input logic i_fill_valid,
     input logic [ADDR_WIDTH-1:0] i_fill_addr,
-    input logic [DATA_WIDTH-1:0] i_fill_data
+    input logic [DATA_WIDTH-1:0] i_fill_data,
+
+    //Write invalidate (a demand write to an address held in the PB kills the entry)
+    input logic i_inval_valid,
+    input logic [ADDR_WIDTH-1:0] i_inval_addr
 );
 
     logic [ADDR_WIDTH-1:0] tag_array [PB_DEPTH-1:0];
@@ -27,7 +31,7 @@ module prefetch_buffer(
     always_comb begin
         o_lookup_hit = 1'b0;
         o_lookup_data = '0;
-        if(i_valid_lookup) begin
+        if(i_lookup_valid) begin
             for(int i = 0; i < PB_DEPTH; i++) begin
                 if(valid_array[i] && (tag_array[i] == i_lookup_addr)) begin
                     o_lookup_hit = 1'b1;
@@ -49,7 +53,15 @@ module prefetch_buffer(
             if (o_lookup_hit) begin
                 for(int i=0; i<PB_DEPTH; i++) begin
                     if(valid_array[i] && (tag_array[i] == i_lookup_addr)) begin
-                        valid_array[i] <= 1'b0; // Invalidate the entry after a successful lookup
+                        valid_array[i] <= 1'b0; // Hit-and-invalidate
+                    end
+                end
+            end
+
+            if (i_inval_valid) begin
+                for(int i=0; i<PB_DEPTH; i++) begin
+                    if(valid_array[i] && (tag_array[i] == i_inval_addr)) begin
+                        valid_array[i] <= 1'b0; // Write invalidates stale prefetched data
                     end
                 end
             end

@@ -42,7 +42,7 @@ module fr_fcfs_arbiter #(
 
     assign read_row  = i_read_addr[COL_WIDTH + ROW_WIDTH -1 : COL_WIDTH];
     assign write_row = i_write_addr[COL_WIDTH + ROW_WIDTH -1 : COL_WIDTH];
-    assign pref_row  = i_pref_addr[COL_WIDTH + ROW_WIDTH -1 : COL_WIDTH];
+    assign pref_row  = i_prefetch_addr[COL_WIDTH + ROW_WIDTH -1 : COL_WIDTH];
 
     //Hit detection of row 
     logic read_is_hit;
@@ -55,7 +55,7 @@ module fr_fcfs_arbiter #(
     always_comb begin
         o_read_ready   = 1'b0;
         o_write_ready  = 1'b0;
-        o_pref_ready   = 1'b0;
+        o_prefetch_ready   = 1'b0;
         
         o_fsm_valid    = 1'b0;
         o_fsm_is_write = 1'b0;
@@ -77,20 +77,20 @@ module fr_fcfs_arbiter #(
         end 
         else if(i_read_valid) begin //Demand Read but row is not open
             o_fsm_valid = 1'b1;
-            o_fsm_write = 1'b0;
+            o_fsm_is_write = 1'b0;
             o_fsm_addr = i_read_addr;
             o_read_ready = i_fsm_ready;
         end
         else if(i_write_valid) begin //Demand Write but row is not open
             o_fsm_valid = 1'b1;
-            o_fsm_write = 1'b1;
+            o_fsm_is_write = 1'b1;
             o_fsm_addr = i_write_addr;
             o_fsm_data = i_write_data;
             o_write_ready = i_fsm_ready;
         end
         else if(i_prefetch_valid) begin //Prefetch request (lowest priority)
             o_fsm_valid = 1'b1;
-            o_fsm_write = 1'b0; //Prefetch is always a read
+            o_fsm_is_write = 1'b0; //Prefetch is always a read
             o_fsm_addr = i_prefetch_addr;
             o_prefetch_ready = i_fsm_ready;
         end
