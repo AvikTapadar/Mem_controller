@@ -8,6 +8,7 @@ from Golden_model import GoldenMemoryController
 
 TIMEOUT_US = 5
 
+
 async def dram_model(dut):
     """Behavioural DRAM driving i_dram_rdata from o_dram_* commands."""
     mem, row = {}, 0
@@ -52,226 +53,118 @@ async def rd(m, g, addr):
     assert got == exp, f"Mismatch @ {hex(addr)}: RTL={hex(got)} Golden={hex(exp)}"
     return got
 
-# A. Directed tests (20)
-@cocotb.test()
-async def test_01_single_write_read(dut):
-    m, g = await setup(dut)
-    await wr(m, g, 0x1000, 0xDEADBEEF)
-    await rd(m, g, 0x1000)
+from collections import Counter
+
+N_SEEDS = 1000
+TXNS_PER_SEED = 10          # 10 x 1000 = 10,000 transactions
+
+TOTAL = Counter()             # accumulated across all seeds
+
+
+async def monitor(dut, stats):
+    """Coverage + AXI protocol checks, sampled every clock."""
+    prev_rvalid = prev_rready = prev_bvalid = prev_bready = 0
+    while True:
+        await RisingEdge(dut.clk)
+        if not dut.rst_n.value.is_resolvable or int(dut.rst_n.value) == 0:
+            prev_rvalid = prev_rready = prev_bvalid = prev_bready = 0
+            continue
+        try:
+            arv, arr = int(dut.arvalid.value), int(dut.arready.value)
+            rv, rr = int(dut.rvalid.value), int(dut.rready.value)
+            bv, br = int(dut.bvalid.value), int(dut.bready.value)
+            pbh = int(dut.pb_hit.value)
+            cmd = int(dut.o_dram_cmd.value)
+        except ValueError:
+            continue
+
+        # ---- coverage ----
+        if arv and arr:
+            stats["ar_accepted"] += 1
+            if pbh:
+                stats["pb_hits"] += 1
+        stats[{1: "dram_ACT", 2: "dram_RD", 3: "dram_WR", 4: "dram_PRE"}.get(cmd, "dram_other")] += 1
+
+        # ---- AXI protocol rules ----
+        # valid must stay high until the ready handshake happens
+        if prev_rvalid and not prev_rready and not rv:
+            stats["PROTO_VIOLATION_rvalid_dropped"] += 1
+        if prev_bvalid and not prev_bready and not bv:
+            stats["PROTO_VIOLATION_bvalid_dropped"] += 1
+        prev_rvalid, prev_rready, prev_bvalid, prev_bready = rv, rr, bv, br
+
+
+def pick_op(rng, st):
+    """Returns (is_write, addr) using weighted scenario selection."""
+    r = rng.random()
+    rows = [0x1000, 0x2000, 0x3000, 0x4000, 0x8000, 0x10000, 0x20000, 0x3F0000]
+    if r < 0.30 and st["stride"]:                      # continue current stream
+        st["cur"] += st["stride"]
+        return rng.random() < 0.15, st["cur"]
+    if r < 0.45:                                       # start new stride stream
+        st["stride"] = rng.choice([4, 8, 12, 16, 32, 64, -4, -8])
+        st["cur"] = rng.choice(rows) + rng.randrange(64, 128) * 4
+        return False, st["cur"]
+    if r < 0.60 and st["stride"]:                      # HAZARD: write to predicted next addr
+        return True, st["cur"] + st["stride"]
+    if r < 0.75:                                       # row thrash
+        return rng.random() < 0.5, rng.choice(rows) + rng.randrange(0, 8) * 4
+    if r < 0.85:                                       # re-access recent address
+        return rng.random() < 0.3, st["cur"]
+    return rng.random() < 0.4, rng.choice(rows) + rng.randrange(0, 64) * 4
 
 
 @cocotb.test()
-async def test_02_read_uninitialized_is_zero(dut):
+@cocotb.parametrize(seed=list(range(N_SEEDS)))
+async def test_random(dut, seed):
     m, g = await setup(dut)
-    await rd(m, g, 0x1040)
+    stats = Counter()
+    cocotb.start_soon(monitor(dut, stats))
 
+    # random backpressure on responses for half the seeds
+    if seed % 2:
+        m.read_if.r_channel.set_pause_generator(itertools.cycle([1, 0, 0, 1, 1, 0]))
+        m.write_if.b_channel.set_pause_generator(itertools.cycle([0, 1, 0, 0, 1]))
 
-@cocotb.test()
-async def test_03_overwrite_same_addr(dut):
-    m, g = await setup(dut)
-    await wr(m, g, 0x1000, 0x11111111)
-    await wr(m, g, 0x1000, 0x22222222)
-    await rd(m, g, 0x1000)
-
-
-@cocotb.test()
-async def test_04_all_zero_and_all_ones(dut):
-    m, g = await setup(dut)
-    await wr(m, g, 0x1000, 0x00000000)
-    await wr(m, g, 0x1004, 0xFFFFFFFF)
-    await rd(m, g, 0x1000)
-    await rd(m, g, 0x1004)
-
-
-@cocotb.test()
-async def test_05_back_to_back_writes_then_reads(dut):
-    m, g = await setup(dut)
-    for i in range(8):
-        await wr(m, g, 0x1000 + 4 * i, 0xA0000000 + i)
-    for i in range(8):
-        await rd(m, g, 0x1000 + 4 * i)
-
-
-@cocotb.test()
-async def test_06_read_immediately_after_write(dut):
-    m, g = await setup(dut)
-    for i in range(6):
-        await wr(m, g, 0x1100 + 4 * i, 0xB0000000 + i)
-        await rd(m, g, 0x1100 + 4 * i)
-
-
-@cocotb.test()
-async def test_07_row_hit_sequence(dut):
-    m, g = await setup(dut)
-    for i in range(10):
-        await wr(m, g, 0x1000 + 4 * i, i * 0x01010101)
-    for i in range(10):
-        await rd(m, g, 0x1000 + 4 * i)
-
-
-@cocotb.test()
-async def test_08_row_miss_alternating(dut):
-    m, g = await setup(dut)
-    await wr(m, g, 0x1000, 0xAAAA0001)
-    await wr(m, g, 0x2000, 0xBBBB0002)
-    for _ in range(4):
-        await rd(m, g, 0x1000)
-        await rd(m, g, 0x2000)
-
-
-@cocotb.test()
-async def test_09_first_and_last_column_of_row(dut):
-    m, g = await setup(dut)
-    await wr(m, g, 0x1000, 0xC0000000)
-    await wr(m, g, 0x10FC, 0xC00000FC)
-    await rd(m, g, 0x1000)
-    await rd(m, g, 0x10FC)
-
-
-@cocotb.test()
-async def test_10_row_boundary_crossing(dut):
-    m, g = await setup(dut)
-    for a in (0x10F8, 0x10FC, 0x1100, 0x1104):
-        await wr(m, g, a, 0xD0000000 + a)
-    for a in (0x10F8, 0x10FC, 0x1100, 0x1104):
-        await rd(m, g, a)
-
-
-@cocotb.test()
-async def test_11_sixteen_distinct_rows(dut):
-    m, g = await setup(dut)
-    addrs = [0x1000 + 0x100 * i for i in range(16)]
-    for a in addrs:
-        await wr(m, g, a, 0xE0000000 + a)
-    for a in addrs:
-        await rd(m, g, a)
-
-
-@cocotb.test()
-async def test_12_interleaved_write_read(dut):
-    m, g = await setup(dut)
-    for i in range(10):
-        a = 0x1000 + 4 * i
-        await wr(m, g, a, 0xF0000000 + i)
-        await rd(m, g, a)
-        if i:
-            await rd(m, g, a - 4)
-
-
-@cocotb.test()
-async def test_13_write_to_prefetched_address_not_stale(dut):
-    m, g = await setup(dut)
-    for i in range(8):
-        await wr(m, g, 0x1000 + 4 * i, 0x1000 + i)
-    for i in range(4):                       # train prefetcher
-        await rd(m, g, 0x1000 + 4 * i)
-    await wr(m, g, 0x1010, 0x600DF00D)       # overwrite predicted next addr
-    await rd(m, g, 0x1010)
-
-
-@cocotb.test()
-async def test_14_reread_same_addr_many_times(dut):
-    m, g = await setup(dut)
-    await wr(m, g, 0x1234 & ~3, 0x12345678)
-    for _ in range(12):
-        await rd(m, g, 0x1234 & ~3)
-
-
-@cocotb.test()
-async def test_15_reverse_stride_reads(dut):
-    m, g = await setup(dut)
-    for i in range(8):
-        await wr(m, g, 0x1000 + 4 * i, 0x70000000 + i)
-    for i in reversed(range(8)):
-        await rd(m, g, 0x1000 + 4 * i)
-
-
-@cocotb.test()
-async def test_16_long_sequential_stream_32(dut):
-    m, g = await setup(dut)
-    for i in range(32):
-        await wr(m, g, 0x2000 + 4 * i, 0x80000000 + i)
-    for i in range(32):
-        await rd(m, g, 0x2000 + 4 * i)
-
-
-@cocotb.test()
-async def test_17_same_address_repeated_zero_stride(dut):
-    m, g = await setup(dut)
-    await wr(m, g, 0x1000, 0x99999999)
-    for _ in range(10):
-        await rd(m, g, 0x1000)
-
-
-@cocotb.test()
-async def test_18_backpressure_on_read_response(dut):
-    m, g = await setup(dut)
-    m.read_if.r_channel.set_pause_generator(itertools.cycle([1, 1, 1, 0]))
-    for i in range(6):
-        await wr(m, g, 0x1000 + 4 * i, 0x30000000 + i)
-    for i in range(6):
-        await rd(m, g, 0x1000 + 4 * i)
-
-
-@cocotb.test()
-async def test_19_backpressure_on_write_response(dut):
-    m, g = await setup(dut)
-    m.write_if.b_channel.set_pause_generator(itertools.cycle([1, 1, 1, 0]))
-    for i in range(6):
-        await wr(m, g, 0x1000 + 4 * i, 0x40000000 + i)
-    for i in range(6):
-        await rd(m, g, 0x1000 + 4 * i)
-
-
-@cocotb.test()
-async def test_20_idle_gaps_between_transactions(dut):
-    m, g = await setup(dut)
-    for i in range(5):
-        await wr(m, g, 0x1000 + 4 * i, 0x50000000 + i)
-        await ClockCycles(dut.clk, 20)
-    for i in range(5):
-        await rd(m, g, 0x1000 + 4 * i)
-        await ClockCycles(dut.clk, 15)
-
-# B. Stride sweep: 8 strides x 5 lengths = 40 tests
-@cocotb.test()
-@cocotb.parametrize(stride=[4, 8, 12, 16, 32, 64, 128, 256],
-                    length=[2, 3, 4, 6, 10])
-async def test_stride(dut, stride, length):
-    m, g = await setup(dut)
-    base = 0x1000
-    addrs = [base + stride * i for i in range(length)]
-    for i, a in enumerate(addrs):
-        await wr(m, g, a, 0xC0DE0000 + i)
-    for a in addrs:
-        await rd(m, g, a)
-
-# C. Data patterns: 10 tests
-@cocotb.test()
-@cocotb.parametrize(pattern=[0x00000000, 0x00000001, 0xFFFFFFFF, 0xAAAAAAAA,
-                             0x55555555, 0x80000000, 0x7FFFFFFF, 0xDEADBEEF,
-                             0x12345678, 0xCAFEBABE])
-async def test_data_pattern(dut, pattern):
-    m, g = await setup(dut)
-    for a in (0x1000, 0x1004, 0x2000):
-        await wr(m, g, a, pattern)
-    for a in (0x1000, 0x1004, 0x2000):
-        await rd(m, g, a)
-
-# D. Constrained-random mixes: 30 seeds
-@cocotb.test()
-@cocotb.parametrize(seed=list(range(30)))
-async def test_random_mix(dut, seed):
-    m, g = await setup(dut)
     rng = random.Random(seed)
-    rows = [0x1000, 0x2000, 0x3000]
-    cur = rng.choice(rows)
-    for _ in range(40):
-        if rng.random() < 0.4:                        # continue a sequential stream
-            cur += 4
-        else:                                         # jump somewhere in a small pool
-            cur = rng.choice(rows) + rng.randrange(0, 64) * 4
-        if rng.random() < 0.4:
-            await wr(m, g, cur, rng.getrandbits(32))
+    st = {"cur": 0x1000, "stride": 0}
+    mismatches, shown = 0, 0
+
+    for n in range(TXNS_PER_SEED):
+        is_wr, addr = pick_op(rng, st)
+        addr = (addr & 0x3FFFFC)                        # keep inside 4 MB, word aligned
+        if is_wr:
+            data = rng.getrandbits(32)
+            await wr(m, g, addr, data)
+            stats["writes"] += 1
         else:
-            await rd(m, g, cur)
+            exp = g.read_memory(addr)
+            raw = await with_timeout(cocotb.start_soon(m.read(addr, 4)), TIMEOUT_US, "us")
+            got = int.from_bytes(raw.data, "little")
+            stats["reads"] += 1
+            if got != exp:
+                mismatches += 1
+                if shown < 10:
+                    dut._log.error(f"seed={seed} txn={n} MISMATCH @ {hex(addr)} RTL={hex(got)} GOLD={hex(exp)}")
+                    shown += 1
+
+        if rng.random() < 0.05:                         # occasional idle gap
+            await ClockCycles(dut.clk, rng.randrange(1, 30))
+
+    stats["mismatches"] = mismatches
+    TOTAL.update(stats)
+    dut._log.info(f"[seed {seed}] {dict(stats)}")
+    if seed == N_SEEDS - 1:
+        dut._log.info("=" * 60)
+        dut._log.info(f"TOTAL TXNS      : {TOTAL['reads'] + TOTAL['writes']}")
+        dut._log.info(f"READS CHECKED   : {TOTAL['reads']}   MISMATCHES: {TOTAL['mismatches']}")
+        dut._log.info(f"PB HITS         : {TOTAL['pb_hits']} / {TOTAL['ar_accepted']} reads")
+        dut._log.info(f"DRAM CMDS       : ACT={TOTAL['dram_ACT']} PRE={TOTAL['dram_PRE']} "
+                      f"RD={TOTAL['dram_RD']} WR={TOTAL['dram_WR']}")
+        dut._log.info(f"PROTOCOL VIOL.  : rvalid={TOTAL['PROTO_VIOLATION_rvalid_dropped']} "
+                      f"bvalid={TOTAL['PROTO_VIOLATION_bvalid_dropped']}")
+        dut._log.info("=" * 60)
+
+    assert mismatches == 0, f"{mismatches} data mismatches in seed {seed}"
+    assert stats["PROTO_VIOLATION_rvalid_dropped"] == 0
+    assert stats["PROTO_VIOLATION_bvalid_dropped"] == 0
