@@ -201,7 +201,8 @@ module top #(
     assign axi_rd_ready = !rd_busy && (pb_hit ? 1'b1 : arb_rd_ready);
 
     // Prefetch Buffer fill routing
-    assign pb_fill_valid = fsm_resp_valid && in_flight_is_pref;
+    wire pref_addr_written = wr_fire && (axi_wr_addr == in_flight_addr);
+    assign pb_fill_valid = fsm_resp_valid && in_flight_is_pref && !pref_addr_written;
     assign pb_fill_addr  = in_flight_addr;
 
     // AXI R / B holding registers
