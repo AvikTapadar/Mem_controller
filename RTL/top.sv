@@ -190,10 +190,10 @@ module top #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             in_flight_is_pref <= 1'b0;
-            in_flight_addr    <= '0;
+            in_flight_addr <= '0;
         end else if (fsm_req_valid && fsm_req_ready && !fsm_req_is_write) begin
             in_flight_is_pref <= pref_req_ready;   // only high when the prefetch branch was granted
-            in_flight_addr    <= fsm_req_addr;
+            in_flight_addr <= fsm_req_addr;
         end
     end
 
@@ -214,7 +214,7 @@ module top #(
             wr_busy <= 1'b0;
             b_vld   <= 1'b0;
         end else begin
-            // ---- Read ----
+            // Read
             if (ar_fire) rd_busy <= 1'b1;
 
             if (ar_fire && pb_hit) begin
@@ -230,7 +230,7 @@ module top #(
                 rd_busy <= 1'b0;
             end
 
-            // ---- Write (posted: B returned once the write is accepted) ----
+            // Write (posted: B returned once the write is accepted)
             if (wr_fire) begin
                 wr_busy <= 1'b1;
                 b_vld   <= 1'b1;
